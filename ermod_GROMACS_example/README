@@ -1,0 +1,24 @@
+This directory contains the following files.
+
+# solution system #
+1. min.mdp ; minimization
+2. nvt.mdp ; equilibration in NVT
+3. npt.mdp ; equilibration in NPT
+4. solution_run.mdp and output files (log and xtc) ; production run in NPT
+
+# solvent system #
+5. wat.top
+6. solvent.gro
+(2. nvt.mdp)
+(3. npt.mdp)
+7. solvent_run.mdp and output files (log and xtc) ; production run in NPT
+
+# solute system #
+8. etoh.top
+9. etoh.gro
+10. solute_min.mdp ; minimization
+11. solute_eq.mdp  ; equilibration
+12. solute_run.mdp and output file (xtc) ; production run of an isolated system
+
+# sample output of the solvation free energy #
+13. slvfe-sample.log

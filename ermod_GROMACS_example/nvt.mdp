@@ -1,0 +1,39 @@
+; Preprocessing
+title      = equilibration in NVT for solution and solvent systems
+
+; Run conrol
+integrator = sd
+dt         = 0.002 ; 2 fs
+nsteps     = 25000 ; 50 ps
+
+; Neighbor searching
+pbc        = xyz
+
+;; Electrostatics
+coulombtype = PME
+rcoulomb    = 1.2
+pme_order   = 6
+fourier_nx = 32
+fourier_ny = 32
+fourier_nz = 32
+
+; VdW
+vdwtype     = Switch
+rvdw_switch = 1.0
+rvdw        = 1.2
+
+; Temperature coupling
+tcoupl      = V-rescale
+tc_grps     = System
+tau_t       = 1.0
+ref_t       = 300
+
+;; Pressure coupling
+pcoupl      = no
+
+; Velocity generation
+gen_vel     = yes
+gen_temp    = 300
+
+; Bonds
+constraints = all-bonds

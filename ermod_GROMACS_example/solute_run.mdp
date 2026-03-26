@@ -1,0 +1,40 @@
+; Preprocessing
+title      = production run for isolated solute
+
+; Run conrol
+; For small mol calculation in vacuum we recommend using Langevin instead of V-R or N-H
+integrator = md
+dt         = 0.002 ; 2 fs
+nsteps     = 25000000 ; 50 ns
+comm_mode  = Linear
+nstcomm    = 100
+
+; Output control
+nstxtcout   = 50
+
+; Neighbor searching
+pbc        = xyz
+
+;; Electrostatics
+coulombtype = Cut-off
+rcoulomb    = 1.2
+
+; VdW
+vdwtype     = Switch
+rvdw_switch = 1.0
+rvdw        = 1.2
+
+; Temperature coupling
+tcoupl      = V-rescale
+tc_grps     = System
+tau_t       = 1.0
+ref_t       = 300
+
+;; Pressure coupling
+pcoupl      = no
+
+; Velocity generation
+gen_vel     = no
+
+; Bonds
+constraints = all-bonds

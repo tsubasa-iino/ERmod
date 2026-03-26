@@ -1,0 +1,37 @@
+; Preprocessing
+title      = equilibration for isolated solute
+
+; Run conrol
+integrator = md
+dt         = 0.002 ; 2 fs
+nsteps     = 25000; 50 ps
+comm_mode  = Linear
+nstcomm    = 100
+
+; Neighbor searching
+pbc        = xyz
+
+;; Electrostatics
+coulombtype = Cut-off
+rcoulomb    = 1.2
+
+; VdW
+vdwtype     = Switch
+rvdw_switch = 1.0
+rvdw        = 1.2
+
+; Temperature coupling
+tcoupl      = V-rescale
+tc_grps     = System
+tau_t       = 1.0
+ref_t       = 300
+
+;; Pressure coupling
+pcoupl      = no
+
+; Velocity generation
+gen_vel     = yes
+gen_temp    = 300
+
+; Bonds
+constraints = all-bonds
