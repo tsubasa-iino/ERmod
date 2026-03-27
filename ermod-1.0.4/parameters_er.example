@@ -1,0 +1,31 @@
+!  file param.lst
+!  file for storing the constant parameters
+&ene_param
+      iseed = 123456789,         ! randum number seed   9 digits or less
+
+      slttype = 1,
+!     slttype = 2,
+
+      boxshp = 1,   !  0 : non-periodic  1 : periodic
+      estype = 2,   !  1 : constant volume  2 : constant pressure
+
+      inscnd = 0,   !  0 : random  1 : spherical  2 : slab  3 : reference
+      lwreg = 0.0, upreg = 5.0,
+
+      inptemp = 298.15,                                     ! Kelvin
+      elecut = 12.0,                                        ! coulomb cutoff
+      upljcut = 10.0, lwljcut = 9.0,                        ! LJ tapering
+!     cltype = 0,                                           ! bare Coulomb
+      cltype = 2, screen = 0.35,  splodr = 6, ms1max = 96,  ! PME
+
+      block_threshold = 7.0,
+      engdiv = 10
+/
+&hist
+      eclbin = 5.0e-2, ecfbin = 2.0e-3, ec0bin = 2.0e-4, finfac = 10.0,
+      ecdmin = -80.0,  ecfmns = -0.20,  ecdcen = 0.0,    eccore = 20.0,
+      ecdmax = 1.0e11, pecore = 200
+/
+
+
+

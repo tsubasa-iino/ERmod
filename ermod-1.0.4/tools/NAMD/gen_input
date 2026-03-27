@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+
+import os
+import os.path
+import shutil
+import sys
+import re
+import pickle
+from argparse import ArgumentParser
+
+parser = ArgumentParser()
+
+# only have to specify one of three:
+parser.add_argument("-l", "--log", dest = "log",
+                  help = "NAMD log file")
+
+parser.add_argument("-x", "--dcd", dest = "dcd",
+                  help = "Solution or reference trajectory file")
+
+parser.add_argument("-p", "--pdb", dest = "pdb",
+                  help = "(deprecated) same as --rigid")
+parser.add_argument("-r", "--rigid", dest = "pdb",
+                  help = "Solute structure PDB file (for rigid insertion)")
+
+parser.add_argument("-s", "--flexible", dest = "solute",
+                  help = "Solute trajectory file (for flexible insertion)")
+
+parser.add_argument("-d", "--div", dest = "div", type=int,
+                  help = "Number of divided sections",
+                  default = None)
+
+parser.add_argument("--minenergy", dest = "minenergy", type=float,
+                  help = "Minimum energy in kcal/mol",
+                  default = -20.0)
+
+parser.add_argument("--maxins", dest = "maxins", type=int,
+                  help = "Number of insertions for refs (default: 1000)",
+                  default = 1000)
+
+options = parser.parse_args()
+
+if options.log == None:
+    print("Error: log file is not specified (try --help)", file=sys.stderr)
+    sys.exit(1)
+
+if options.dcd == None:
+    print("Error: dcd file is not specified (try --help)", file=sys.stderr)
+    sys.exit(1)
+
+def check_exists(f):
+    if not os.path.exists(f):
+        print("Error:", f, "file does not exist", file=sys.stderr)
+        sys.exit(1)
+
+check_exists("MDinfo")
+check_exists("SltInfo")
+check_exists(options.dcd)
+check_exists(options.log)
+if options.pdb:
+    check_exists(options.pdb)
+if options.solute:
+    check_exists(options.solute)
+
+def parse_log():
+    with open(options.log, "rt") as logfh:
+        temp = 300.0
+        simtype = 1 # nvt
+        is_periodic = 0
+        ljfrcswt = 0 # CHARMM-type potential switch
+        cut = 0.
+        switchlj = 0.
+        coulombtype = 0
+        if options.pdb:
+            mode = 2 # fixed
+        elif options.solute:
+            mode = 3 # flexible
+        else:
+            mode = 1 # solution
+        total = 0
+        freq = 0
+        infopat = re.compile(r"Info: ")
+        runpat = re.compile(r"Running for\s+(\d+)")
+        for l in logfh:
+            # TCL: Running for 500000 steps
+            m = runpat.search(l)
+            if m:
+                total = int(m.group(1))
+
+            if infopat.match(l) == None:
+                continue
+            # Info: BERENDSEN PRESSURE COUPLING ACTIVE
+            # Info: LANGEVIN PISTON PRESSURE CONTROL ACTIVE
+            if re.search(r"PRESSURE (COUPLING|CONTROL) ACTIVE", l):
+                simtype = 2 # npt
+
+            # Info: LANGEVIN DYNAMICS ACTIVE
+            # Info: LANGEVIN TEMPERATURE   300
+            m = re.search(r"LANGEVIN TEMPERATURE\s+([-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?)", l)
+            if m:
+                temp = float(m.group(1))
+            m = re.search(r"BERENDSEN TEMPERATURE\s+([-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?)", l)
+            if m:
+                temp = float(m.group(1))
+            
+            # Info: SWITCHING ACTIVE
+            # Info: VDW FORCE SWITCHING ACTIVE
+            # Info: SWITCHING ON           9
+            # Info: SWITCHING OFF          10
+            m = re.search(r"VDW FORCE SWITCHING ACTIVE", l)
+            if m:
+                ljfrcswt = 2 # force switching
+            m = re.search(r"SWITCHING OFF\s+([-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?)", l)
+            if m:
+                cut = float(m.group(1))
+            m = re.search(r"SWITCHING ON\s+([-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?)", l)
+            if m:
+                switchlj = float(m.group(1))
+
+            # Info: PERIODIC CELL BASIS 1  64 0 0
+            if re.search(r"PERIODIC CELL BASIS", l):
+                is_periodic = 1
+                coulombtype = 1 # Ewald
+                
+            # Info: PARTICLE MESH EWALD (PME) ACTIVE
+            # Info: PME TOLERANCE               1e-06"
+            # Info: PME EWALD COEFFICIENT       0.3"
+            # Info: PME INTERPOLATION ORDER     4"
+            # Info: PME GRID DIMENSIONS         64 64 128"
+            if re.search(r"\(PME\) ACTIVE", l):
+                coulombtype = 2 # PME
+            m = re.search(r"PME EWALD COEFFICIENT\s+([-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?)", l)
+            if m:
+                alpha = float(m.group(1))
+            m = re.search(r"PME INTERPOLATION ORDER\s+(\d+)", l)
+            if m:
+                pme_order = int(m.group(1))
+            m = re.search(r"PME GRID DIMENSIONS\s+(\d+) (\d+) (\d+)", l)
+            if m:
+                box1 = int(m.group(1))
+                box2 = int(m.group(2))
+                box3 = int(m.group(3))
+
+            # Info: DCD FREQUENCY          100
+            m = re.search(r"DCD FREQUENCY\s+(\d+)", l)
+            if m:
+                freq = int(m.group(1))
+
+    params = {
+        "slttype": mode,
+        "boxshp": is_periodic,
+        "estype": simtype,
+        "inptemp": temp,
+        "ljswitch": ljfrcswt,
+        "upljcut": cut,
+        "lwljcut": switchlj,
+        "cltype": coulombtype,
+        "elecut": cut
+    }
+
+    carryover = {}
+    try: 
+        with open(".extraparam", "rb") as ifh:
+            carryover = pickle.load(ifh)
+        # read ljformat from carryover
+        for k in carryover:
+            if k != "sltspec": # sltspec is referenced only in soln
+                params[k] = carryover[k]
+
+    except OSError:
+        pass
+
+    if mode == 1: # for solution system
+        if "sltspec" in carryover:
+            params["sltspec"] = carryover["sltspec"]
+
+    if coulombtype == 1:
+        # TODO: print alpha
+        pass        
+    elif coulombtype == 2: # PME
+        params.update({
+            "screen": alpha,
+            "splodr": pme_order,
+            "ms1max": box1,
+            "ms2max": box2,
+            "ms3max": box3
+        })
+        pass
+
+    if options.div == None:
+        if options.solute != None or options.pdb != None:
+            params["engdiv"] = 5             # reference solvent
+        else:
+            params["engdiv"] = 10            # solution
+    else:
+        params["engdiv"] = options.div
+
+    if options.maxins != None and mode != 1: # for reference solvent
+        params["maxins"] = options.maxins
+
+    # Order of the outputs to parameters_er
+    output_var =["slttype", "sltspec", "boxshp", "estype", "inptemp",
+                 "ljformat", "ljswitch", "upljcut", "lwljcut",
+                 "cltype", "elecut", "screen", "splodr",
+                 "ms1max", "ms2max", "ms3max",
+                 "maxins", "engdiv"]
+
+    with open("parameters_er", "wt") as ofh:
+        print("&ene_param", file=ofh)
+        for k in output_var:
+            if k in list(params.keys()):
+                v = params[k]
+                if isinstance(v, str):
+                    print("        %s = \"%s\"," % (k, v), file=ofh)
+                elif isinstance(v, int):
+                    print("        %s = %d," % (k, v), file=ofh)
+                elif isinstance(v, float):
+                    print("        %s = %g," % (k, v), file=ofh)
+                else:
+                    raise RuntimeError("Unknown output type")
+
+        print("""/
+&hist
+    eclbin=5.0e-2, ecfbin=2.0e-3, ec0bin=2.0e-4, finfac=10.0e0,
+    ecdmin=%f, ecfmns=-0.20e0, ecdcen=0.0e0, eccore=20.0e0,
+    ecdmax=1.0e11, pecore=200
+/
+""" % options.minenergy, file=ofh)
+
+    if options.solute == None and options.pdb == None:
+        # solution system
+        # update parameter_fe
+        feparamf = "../parameters_fe"
+        with open(feparamf, "wt") as fh:
+            print("&fevars", file=fh)
+            print("inptemp=%f" % temp, file=fh)
+            print("/", file=fh)
+
+    if total != 0 and freq != 0:
+        frames = total // freq
+    else:
+        frames = None
+    return (frames, is_periodic)
+    
+(frames, is_periodic) = parse_log()
+
+# update MDinfo
+if frames:
+    with open("MDinfo", "rt") as ifh, open("MDinfo.new", "wt") as ofh:
+        l = next(ifh).split()
+        print(frames, l[1], file=ofh)
+        print(next(ifh).strip(), file=ofh)
+        print(next(ifh).strip(), file=ofh)
+    shutil.move("MDinfo", "MDinfo.bak")
+    shutil.move("MDinfo.new", "MDinfo")
+
+def symlink(src, dest):
+    if os.path.exists(dest):
+        if os.path.islink(dest):
+            # renew link
+            os.remove(dest)
+        else:
+            return
+    os.symlink(src, dest)
+
+# link dcd
+symlink(options.dcd, "HISTORY")
+
+if options.solute:
+    # flexible
+    symlink(options.solute, "SltConf")
+elif options.pdb:
+    # fixed
+    coords = []
+    with open(options.pdb, "rt") as fh:
+        # overwrite SltInfo with coordinate information
+        for l in fh:
+            if l[0:4] == "ATOM" or l[0:6] == "HETATM":
+                coords.append((float(l[30:38]), float(l[38:46]), float(l[46:54])))
+
+    with open("SltInfo", "rt") as ifh, open("SltInfo.new", "wt") as ofh:
+        for pos, l in enumerate(ifh):
+            ls = l.split()
+            if len(ls) in [5, 8]:
+                raise RuntimeError("SltInfo format is old, please restart from gen_structure")
+            print(' '.join(ls[0:7]), coords[pos][0], coords[pos][1], coords[pos][2], file=ofh)
+    shutil.move("SltInfo", "SltInfo.bak")
+    shutil.move("SltInfo.new", "SltInfo")

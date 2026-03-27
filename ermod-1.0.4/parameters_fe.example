@@ -1,0 +1,12 @@
+&fevars
+clcond = "merge", ! Calculation type, "merge" / "basic" / "range"
+numsln = 10,      ! Number of trajectory blocks in solution system
+numref = 5,       ! Number of trajectory blocks in reference system
+numdiv = 10,      ! Number of division for statistics, usually set equal to numsln
+
+uvread = "yes",   ! "not" if average solute-solvent energy is calculated from engsln, instead of aveuv.tt
+slfslt = "yes",   ! "not" if the solute self energy is not read
+infchk = "yes",   ! Enable error analysis for the logarithmic-mesh part
+inptemp = 300,    ! Input Temperature in Kelvin
+mesherr = 0.1,    ! Maximum mesh error tolerance without producing a warning
+/

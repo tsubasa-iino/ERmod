@@ -1,0 +1,546 @@
+#!/usr/bin/env python3
+
+import os
+import os.path
+import sys
+import pickle
+from argparse import ArgumentParser
+
+parser = ArgumentParser()
+
+# topology, mandatory
+parser.add_argument("-d", "--data", dest = "topology",
+                  help = "LAMMPS data file (*.data)",
+                  default = None)
+
+# can be specified; otherwise specify interactively
+parser.add_argument("-s", "--solute", dest = "solute",
+                  help = "molecule-tag of solute molecule (comma separated for multiple choice)",
+                  default = None)
+
+parser.add_argument("-v", "--verbose", dest = "verbose", action = "store_true",
+                  help = "Increase verbosity (for debug)",
+                  default = False)
+
+options = parser.parse_args()
+
+def log(x):
+    if options.verbose:
+        print(x, file=sys.stderr)
+
+def warn_or_error(x, col):
+    prefix = ""
+    suffix = ""
+    if os.isatty(sys.stderr.fileno()):
+        prefix = "\x1b[" + str(col) + ";1m"
+        suffix = "\x1b[0m"
+    print(prefix + x + suffix, file=sys.stderr)
+
+def warn(x):
+    warn_or_error("Warning: " + x, 33)
+
+def error(x):
+    warn_or_error("Error: " + x, 31)
+    sys.exit(1)
+
+def safe_close(fh):
+    # asynchronous NFS may miss file creation
+    # esp. combined with delayed allocation (ext4, XFS)
+    fh.flush()
+    os.fsync(fh.fileno())
+    fh.close()
+
+if options.topology == None:
+    error("topology must be specified (try --help)")
+
+class union_find:
+    """Tarjan's famous disjoint-set data structure.
+
+    """
+    def __init__(self, n):
+        self.uftable_ = [-1] * n
+    
+    def union(self, i, j):
+        pi = self.find(i)
+        pj = self.find(j)
+        if pi != pj:
+            if self.uftable_[pj] < self.uftable_[pi]:
+                temp = pi
+                pi = pj
+                pj = temp
+            self.uftable_[pi] += self.uftable_[pj];
+            self.uftable_[pj] = pi
+    
+    def find(self, i):
+        if self.uftable_[i] < 0:
+            return i
+        else:
+            newroot = self.find(self.uftable_[i])
+            self.uftable_[i] = newroot
+            return newroot
+
+    def is_connected(self, i, j):
+        pi = self.find(i)
+        pj = self.find(j)
+        return pi == pj
+
+mass_table = {
+  1: 'H',
+  2: 'D',
+  12: 'C',
+  14: 'N',
+  15: 'CH3',
+  16: 'O',
+  19: 'F',
+  23: 'Na',
+  28: 'Si',
+  31: 'P',
+  32: 'S',
+  35: 'Cl',
+  36: 'Cl',
+  40: 'Ca',
+  56: 'Fe',
+  63: 'Cu',
+  64: 'Cu',
+  65: 'Zn',
+  80: 'Br',
+  0: 'M' } # dummy atom
+
+atom_order = [
+  'Na',
+  'Ca',
+  'Fe',
+  'Cu',
+  'Zn',
+  'Si',
+  'C',
+  'P',
+  'N',
+  'H',
+  'D',
+  'S',
+  'O',
+  'Br',
+  'Cl',
+  'F']
+
+def atomtype_of_mass(mass):
+    imass = int(round(mass))
+    if imass not in mass_table:
+        warn("Could not find appropriate atom type from mass (%f); replacing with carbon (12.0)" % mass)
+        return 'C'
+    return mass_table[imass]
+
+def atomtypes2molname(atomtypes):
+    atoms = {}
+    for atomtype in atomtypes:
+        if atomtype == 'CH3':
+            if not 'C' in atoms:
+                atoms['C'] = 1
+            else:
+                atoms['C'] += 1
+            if not 'H' in atoms:
+                atoms['H'] = 3
+            else:
+                atoms['H'] += 3
+        else:
+            if not atomtype in atoms:
+                atoms[atomtype] = 1
+            else:
+                atoms[atomtype] += 1
+    stmp = ''
+    for a in atom_order:
+        if a in list(atoms.keys()):
+            if atoms[a] == 1:
+                stmp += a
+            else:
+                stmp += a + str(atoms[a])
+    return stmp
+carryover = {}
+
+class topology:
+    def __init__(self):
+        self.atoms = []
+        self.atom2index = {}
+        self.index2atom = {}
+        self.atom2type = {}
+        self.atom2charge = {}
+        self.molid2moltype = {}
+        self.atom2molid = {}
+        self.atomtype2mass = {}
+        self.atomtype2epsilon = {}
+        self.atomtype2sigma = {}
+        self.bonds = []
+        self.system = {}
+        self.moleculetypes = {}
+        self.molecules = []
+
+    def process_masses(self, ls):
+        if len(ls) < 2:
+            error("Unknown data file format in Masses")
+        log("Masses: ")
+        log(ls)
+
+        atype = ls[0]
+        mass  = float(ls[1])
+        self.atomtype2mass[atype] = mass
+
+    def process_pair_coeffs(self, ls):
+        if len(ls) < 3:
+            error("Unknown data file format in Pair Coeffs")
+        log("Pair Coeffs: ")
+        log(ls)
+
+        atype   = ls[0]
+        epsilon = float(ls[1])
+        sigma   = float(ls[2])
+        self.atomtype2epsilon[atype] = epsilon
+        self.atomtype2sigma[atype]   = sigma
+
+    def process_atoms(self, ls):
+        if len(ls) < 7:
+            error("Unknown data file format in Atoms")
+        atomid  = ls[0]
+        molid   = ls[1]
+        atype   = ls[2]
+        charge  = float(ls[3])
+
+        iatom = len(self.atoms)
+        self.atom2index[atomid]   = iatom
+        self.index2atom[iatom]    = atomid
+        self.atom2type[atomid]    = atype
+        self.atom2charge[atomid]  = charge
+        self.atom2molid[atomid]   = molid
+
+    def process_bonds(self, ls):
+        if len(ls) < 4:
+            error("Unknown data file format in Bonds")
+        atomid1 = ls[2]
+        atomid2 = ls[3]
+
+        self.bonds.append( [atomid1, atomid2] )
+    
+    def read_data(self, fname):
+        fh = open(fname, "rt")
+        state = None
+        nmass = 0
+        npair = 0
+        natom = 0
+        nbond = 0
+        cnt_line = 0
+        for l in fh:
+            cnt_line += 1
+            if cnt_line == 1:
+                continue
+
+            l = l.split('#')[0] # remove comments
+            l = l.strip()
+            if l == "":
+                continue
+            if l == "Masses":
+                state = l
+                continue
+            if l == "Pair Coeffs":
+                state = l
+                continue
+            if l == "Atoms":
+                state = l
+                continue
+            if l == "Bonds":
+                state = l
+                continue
+
+            ls = l.split()
+
+            if len(ls) > 2 and ls[1] == "atom" and ls[2] == "types":
+                nmass = int(ls[0])
+                npair = int(ls[0])
+                continue
+            if len(ls) > 1 and ls[1] == "atoms":
+                natom = int(ls[0])
+                continue
+            if len(ls) > 1 and ls[1] == "bonds":
+                nbond = int(ls[0])
+                continue
+
+            if state == "Masses":
+                if nmass > 0:
+                    self.process_masses(ls)
+                    nmass -= 1
+                    if nmass == 0:
+                        state = None
+                else:
+                    error("Inconsistent number of atomtypes with Masses section")
+                continue
+            if state == "Pair Coeffs":
+                if npair > 0:
+                    self.process_pair_coeffs(ls)
+                    npair -= 1
+                    if npair == 0:
+                        state = None
+                else:
+                    error("Inconsistent number of atomtypes with Pair Coeffs section")
+                continue
+            if state == "Atoms":
+                if natom > 0:
+                    self.process_atoms(ls)
+                    natom -= 1
+                    if natom == 0:
+                        state = None
+                else:
+                    error("Inconsistent number of atoms with Atoms section")
+                continue
+            if state == "Bonds":
+                if nbond > 0:
+                    self.process_bonds(ls)
+                    nbond -= 1
+                    if nbond == 0:
+                        state = None
+                else:
+                    error("Inconsistent number of bonds with Bonds section")
+                continue
+
+        fh.close()
+
+    # make system, moleculetypes, molecules, same as gromacs
+    def make_system(self):
+        moltypes = []     # molecule type list (appearing order)
+                          # reverse resolution of self.moleculetypes
+        moltype2mols = {} # molecule indides of the molecular type
+        molatoms = []     # atom indices of the molecule
+
+        # split atoms into molecules
+        natom = len(self.atom2type)
+        utf = union_find(natom)
+        for (atom1, atom2) in self.bonds:
+            utf.union(int(atom1)-1, int(atom2)-1)
+
+        root2atoms = {}
+        for iatom in range(natom):
+            root = utf.find(iatom) + 1
+            if root not in root2atoms:
+                root2atoms[root] = []
+            root2atoms[root].append(iatom+1)
+
+        atoms1st={}
+        composition_count={}
+        moltype2composition={}
+        moltype2charges={}
+        moltype2types={}
+        for root, atoms in sorted(list(root2atoms.items()), key=lambda x:x[0]):
+            charges = [self.atom2charge[str(a)] for a in atoms]
+            types   = [self.atom2type  [str(a)] for a in atoms]
+            composition = atomtypes2molname([atomtype_of_mass(self.atomtype2mass[self.atom2type[str(a)]]) for a in atoms])
+            addmoltype = False
+            if not composition in list(composition_count.keys()):
+                addmoltype = True
+                composition_count[composition] = 1
+                moltype = composition
+            else:
+                found = False
+                for moltype0 in list(moltype2composition.keys()):
+                    if moltype2composition[moltype0] == composition:
+                        if moltype2charges[moltype0] == charges and moltype2types[moltype0] == types:
+                            moltype = moltype0
+                            found   = True
+                if not found:
+                    addmoltype = True
+                    composition_count[composition] += 1
+                    moltype = composition + '(' + str(composition_count[composition]) + ')'
+            if addmoltype:
+                moltype2charges[moltype]     = charges
+                moltype2types[moltype]       = types
+                moltype2composition[moltype] = composition
+                moltype2mols[moltype] = []
+                moltypes.append(moltype)
+                atoms1st[moltype] = atoms
+            moltype2mols[moltype].append( len(molatoms) )
+            molatoms.append( atoms )
+
+        # self.system
+        self.system = []
+        for moltype in moltypes:
+            mols = moltype2mols[moltype]
+            self.system.append( (moltype, len(mols)) )
+
+        isomer = False
+        for moltype in moltypes:
+            if composition_count[moltype2composition[moltype]] > 1:
+                if not isomer:
+                    isomer = True
+                    print('The first atom indices of the following molecules are:')
+                print('  ' + moltype + ': ' + str(atoms1st[moltype][0]))
+
+        # self.moleculetypes
+        self.moleculetypes = {}
+        for molno in range(len(moltypes)):
+            moltype = moltypes[molno]
+            self.moleculetypes[moltype] = molno
+        
+        # self.molecules
+        self.molecules = [None] * len(moltypes)
+        for molno in range(len(moltypes)):
+            moltype = moltypes[molno]
+            mols    = moltype2mols[moltype]
+            atoms   = molatoms[mols[0]]
+            self.molecules[molno] = []
+            for iatom in atoms:
+                atomid = str(iatom)
+                atype  = self.atom2type[atomid]
+                atom   = None # dummy
+                charge = self.atom2charge[atomid]
+                mass   = self.atomtype2mass[atype]
+                self.molecules[molno].append( [atype, atom, charge, mass] )
+
+if not os.path.exists(options.topology):
+    print("Error: data file does not exist!", file=sys.stderr)
+    sys.exit(1)
+
+top = topology()
+top.read_data(options.topology)
+top.make_system()
+
+def get_topology_info():
+    # make list of segment names
+    mollist = [s for (s, _n) in top.system]
+
+    # python 2.3 does not have set()
+    if options.solute:
+        solutes = options.solute.split(',')
+    else:
+        # interactive input
+        print("Molecule types in topology file:", end=' ')
+        for s in mollist:
+            print(s, end=' ')
+        print()
+        l = input("Which molecules are solutes? (For multiple choice please specify as comma-separated list) ").split(',')
+        solutes = [x.strip() for x in l]
+
+    if solutes == []:
+        error("Solute list is empty")
+
+    for s in solutes:
+        if s not in mollist:
+            error("No such segname in topology: %s" % s)
+
+    # At this moment solute can be one of the follows:
+    # * Solute spans several contiguous molecular types.
+    #   In this case, these contiguous types should be treated as a single molecule.
+    # * Solute spans a single molecular type.
+    #   In this case, multiple solute molecules may exist
+
+    # check contiguous or not
+    end_solute = False
+    for i in range(len(mollist) - 1):
+        mol1 = mollist[i]
+        mol2 = mollist[i + 1]
+        if (mol1 in solutes) and (mol2 not in solutes):
+                end_solute = True
+        if (mol2 in solutes) and end_solute:    
+            error("Solute is not contiguous")
+
+    return solutes
+
+solutes = get_topology_info()
+
+# consolidate solutes
+solute_single = (len(solutes) == 1)
+
+mols = []
+if solute_single:
+    # output as in topology (supports multiple solute)
+    for (s, n) in top.system:
+        molno = top.moleculetypes[s]
+        mols.append(([s], n, s in solutes, top.molecules[molno]))
+else:
+    # merge solute and output as a single molecule
+    soluteatoms = []
+    for (s, n) in top.system:
+        if (s in solutes):
+            molno = top.moleculetypes[s]
+            soluteatoms += top.molecules[molno] * n
+
+    solute_first = True
+    for (s, n) in top.system:
+        if s in solutes:
+            if solute_first:
+                mols.append((solutes, 1, True, soluteatoms))
+                solute_first = False
+        else:
+            molno = top.moleculetypes[s]
+            mols.append((s, n, False, top.molecules[molno]))
+
+def gen(mode):
+    import copy
+
+    if not os.path.exists(mode):
+        os.mkdir(mode)
+
+    curmols = copy.deepcopy(mols)
+    nmols = []
+    sites = []
+    # edit molecules for refs: for multiple solutes with n molecules,
+    # refs regards them as 1 solute + (n-1) solvents
+    if mode == "refs":
+        for i in range(len(mols)):
+            (s, n, is_solute, atoms) = mols[i]
+            if is_solute and n > 1:
+                curmols[i:i+1] = [(s, 1, True, atoms),
+                                  (s, n-1, False, atoms)]
+                break
+ 
+    nmols = [n for (_, n, is_solute, _) in curmols
+             if not (mode == "refs" and is_solute)]
+    sites = [len(atoms) for (_, _, is_solute, atoms) in curmols
+             if not (mode == "refs" and is_solute)]
+
+    if mode == "soln":
+        for i in range(len(mols)):
+            if curmols[i][2]:
+                carryover["sltpick"] = i + 1 # 1-origin
+
+    # output MDinfo
+    with open(f"{mode}/MDinfo", "wt") as mdifh:
+        print(f"FRAMES {len(nmols)}", file=mdifh)
+
+        for n in nmols:
+            print(n, end=' ', file=mdifh)
+        print(file=mdifh)
+
+        for n in sites:
+            print(n, end=' ', file=mdifh)
+        print(file=mdifh)
+
+    solvent_cnt = 1
+    ofh = None
+    for (s, n, is_solute, atoms) in curmols:
+        if is_solute:
+            fn = "SltInfo"
+            if n > 1:
+                solvent_cnt += 1
+        else:
+            fn = "MolPrm%d" % solvent_cnt
+            solvent_cnt += 1
+
+        k = 1
+
+        if ofh:
+            safe_close(ofh)
+        ofh = open(mode + "/" + fn, "wt")
+
+        for (atype, atom, charge, mass) in atoms:
+            eps = top.atomtype2epsilon[atype]
+            sig = top.atomtype2sigma[atype]
+            mass = float(mass)
+            print(("%d %10.5f %12s %5s %.8g %.8g %.8g" %
+                           (k, mass, atype, atom, charge, eps, sig)), file=ofh)
+            k += 1
+
+    safe_close(ofh)
+    # write carryover
+    with open(f"{mode}/.extraparam", "wb") as ofh:
+        pickle.dump(carryover, ofh)
+
+gen("soln")
+gen("refs")
+

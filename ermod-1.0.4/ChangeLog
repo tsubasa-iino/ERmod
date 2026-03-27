@@ -1,0 +1,215 @@
+version 1.0.4 (21 Jan 2025)
+* New features:
+    * slvfe was significantly speed up ('invmtrx' in parameters_fe, two new solvers can be used with "gce" or "reg", default "reg").
+    * slvfe checks existing .tt files and .01-99 to test its consistency.
+* Build system:
+    * Fixed various issues with Intel Compiler around 2022, and compiler-related issues #55 and #56
+* Bug fixes:
+    * Fixed an issue causing -inf energy
+    * Fixed a bug that caused the process to stop when N-of-processes > N-of-frames-per-block
+    * Fixed issues when OpenMP enabled
+    * Fixed incorrect NBFIX processing in gen_structure (NAMD, CHARMM)
+* Misc:
+    * Added --disable-double for single-precision calculation in erdst.
+    * Fixed various issues with the single precision mode.
+
+version 1.0.3 (29 Apr 2024)
+* Bug fixes:
+    * Fixed issue with python2->python3 update failure.
+    * Fixed bug when using MPI.
+    * Fixed compiler-dependent bug (extra type finalizer is called in ifx)
+    * Fixed issue with malformed SltInfo with gen_input --rigid.
+
+version 1.0.2 (20 Apr 2024)
+* New features:
+    * System with non-cuboidal box shape should now (finally) be correctly calculated.
+      This feature was not intended to be incorporated in the 1.0 series, but to fix the existing bug found in the release series
+      we needed to switch to the new real-space kernel.
+* Bug fixes:
+    * Fixed issue with non-rectangular box.
+* Note:
+    * Due to the change applied to the kernel, the performance for cuboidal case may be
+    slightly slower than the previous version.
+
+version 1.0.1 (12 Apr 2024)
+* Bug fixes:
+    * Fixed problem that GENESIS gen_structures were broken
+
+version 1.0.0 (11 Apr 2024)
+* New features:
+    * Moved toolchain to python3 and Fortran2008
+    	* Requirement: Python 3.5+
+    * slvfe checks the consistency between soln/refs.
+* Incompatible changes:
+    * SltInfo / MolPrm format was changed. Old format is still accepted.
+    * engsln/engref output formats were changed.
+    * Removed unmaintained tools:
+	* MARBLE
+	* MODYLAS
+* Misc:
+    * Added internal rng to make sure the rng uncorrelated in parallel.
+    * Source code was reformatted with findent (3-column space indentation
+    throughout)
+
+version 0.3.8 (10 January 2023)
+* Energy Histogram Computation:
+    * The tools scripts of gen_structure and gen_input are prepared for
+    GENESIS.
+
+version 0.3.7 (12 April 2021)
+* Solvation Free Energy:
+    * The output convention for the mesh error is regulated by
+    write_mesherror.
+    * The energy coordinates need not be the same among all the solvent
+    species when the running integrals are calculated.
+* Build System:
+    * Whole slvfe source codes are now compiled with a non-MPI fortran compiler.
+    * You can now build programs outside the top directory of the archive,
+    i.e., "mkdir build; cd build; ../configure && make && make install" works.
+
+version 0.3.6 (28 June 2019)
+* Energy Histogram Computation:
+    * Modified LAMMPS gen_input to accept the CRLF code and handle the
+    situation when multiple types are species at dump
+    * The parameters in parameters_er from gen_input is ordered with respect
+    to their physical meanings
+* Bug fixes:
+    * Fixed possible bugs in extensions/Conditional for reading solute
+    coordinates.
+    * Fixed a weird behaviour in NAMD/gen_structure when both of the 1st and
+    2nd molecules are solutes.
+
+version 0.3.5 (09/27/2016)
+* Energy Histogram Computation:
+    * gen_structure for NAMD now accepts NBFIX keyword
+    * MODYLAS inputs are now supported in gen_structure and gen_input
+    * User-defined meshes are accepted for energy coordinates
+* Solvation Free Energy:
+    * Dispersion correction on Lennard-Jones interaction in the slvfe
+    calculation is calculted with a key of ljlrc, and the extensions/LJLRC
+    directory is removed.
+    * A script is prepared for assessing the convergence with respect to
+    the reference-solvent run.
+
+version 0.3.4 (12/24/2015)
+* Energy Histogram Computation:
+    * The ermod program terminates when the cell is not cuboidal
+* Solvation Free Energy:
+    * The number of logarithmic meshes is internally counted in slvfe
+
+version 0.3.3 (10/22/2015)
+* Bug fixes:
+    * Fixed a bug in non-cuboidal box ---- actually not fixed
+
+version 0.3.2 (09/26/2015)
+* Energy Histogram Computation:
+    * CHARMM and LAMMPS inputs are now supported in gen_structure and gen_input (undocumented at the moment)
+    * PPPM computation is implemented
+    * Gromacs-type force switching is implemented
+    * Micelle, lipid membrane, and protein can consist of more than a single
+    species
+
+version 0.3.1 (06/08/2015)
+* Bug fixes:
+    Fixed GROMACS gen_structure cannot specify solutes in interactive way
+
+version 0.3.0 (06/01/2015)
+* Bug fixes:
+    GROMACS topology file parsing is now case sensitive
+    (it was case insensitive to match pre-4.0 behaviour, which is now outdated)
+
+version 0.3.rc1 (05/07/2015)
+* Energy Histogram Computation:
+    * The extension of energy representation with intermediate states is implemented (experimental). 
+* Solvation Free Energy:
+    * The numbers of soln/engsln.XX and refs/engref.XX files are counted
+    internally within the slvfe program.
+* Error reporting:
+    * NBFIX keyword in PSF files, which was not correctly handled, is now reported as an error.
+    * When input atoms are not contiguous, gen_structure generates error instead of warning. Users
+    can fall back to the old behaviour by reverting changes manually.
+* Bug fixes:
+    * mpi_info conflicting with MPI-3.0 is now removed
+    * Blacklisted ifort 12.1.x which emits broken codes.
+    * Misc. configure bug for compiling option
+
+version 0.3.beta1 (02/08/2014)
+* Energy Histogram Computation:
+    * Non-orthogonal periodic box is now correctly handled.
+    * Treatment of asymmetric slab geometry is made possible.
+* File I/O:
+    * Added ERMOD_FORCE_PLUGIN_TYPE environment to coerce file format detection.
+* Bug fixes:
+    * A workaround was implemented in configure agaist a bug in MKL ver 10.3.
+    * Workaround cpp's error when using AMBER force field in GROMACS. This is not perfect (yet).
+    * Some histogram parameters are no longer adjustable (ticket #7)
+
+version 0.3.alpha8 (04/10/2013)
+* Solvation Free Energy:
+    * Added dispersion correction on Lennard-Jones interaction in the modified
+    slvfe.F90 program prepared in the extensions directory. THIS WILL NOT
+    BE ENABLED BY DEFAULT! See extensions/README_LJLRC for details.
+
+version 0.3.alpha7 (04/08/2013)
+* Energy Histogram Computation:
+    * The gromacs-type potential switch and the force switch for the LJ
+    interaction are implemented with a new key of ljswitch.
+* Misc:
+    * A key of insstructure is introduced to select some solute structures
+    according to the solute RMSD relative to the reference structure.
+    * A procedure is defined which conducts a best-fit of
+    the host (presumably protein) to the reference structure
+    and inserts the solute (presumably ligand) within an given range of RMSD.
+
+version 0.3.alpha6 (02/21/2013)
+* Misc:
+    * A snapshot can have its own weight; the weight information is saved in a
+    separate file. The name of the file storing the weight is SysWght for the
+    solution and for the solvent, and is SltWght for the isolated solute used
+    for test-particle insertion. To activate the weight input, wgtsys = 1 in
+    the case of SysWght and wgtins = 1 in the case of SltWght in
+    parameters_er.
+
+version 0.2.4 (02/13/2013)
+* Misc:
+    * There was a bug in case that the soln system contains more than one
+    molecules for the solute species, and this bug is fixed
+    * When the ermod program is used with an NAMD trajectory, it is no more
+    necessary to prepare a .xst file. The cell information is directly read
+    from the .dcd file and the file of HISTCELL linked to .xst file is not
+    created by the gen_input script.
+
+version 0.3.alpha5 (01/30/2013)
+* Misc:
+    * The ermod program does not output the self-energy distribution slfeng.XX
+    at default. A key of selfcal is defined to output the self-energy
+    distribution.
+    * There was a bug in case that the soln system contains more than one
+    molecules for the solute species, and this bug is fixed
+    * When the ermod program is used with an NAMD trajectory, it is no more
+    necessary to prepare a .xst file. The cell information is directly read
+    from the .dcd file and the file of HISTCELL linked to .xst file is not
+    created by the gen_input script.
+    * The predetermined directories and filenames for the slvfe program is now
+    flexible.
+
+version 0.3.alpha4 (05/06/2012)
+* Misc:
+    * trajectory-formats/modylas.F90: Added I/O for Modylas MD package
+    * mol_dissect: Fixed bugs with "save" command, reads PermIndex (so it now supports AMBER output), reads/writes sltpick
+
+version 0.3.alpha3 (04/12/2012)
+* Misc:
+    * tools/AMBER/gen_input: --flexible is now abbreviated to -s.
+
+version 0.3.alpha2 (03/19/2012)
+* Parameters:
+    * The specification for insertion configuration is rewritten with much more general setting.
+
+version 0.2.3 (03/19/2012)
+* General:
+    * ERMOD is now licensed under GPL v2 or later.
+* Install:
+    * Fixed compilation problems on FX10 from Fujitsu.
+
+
