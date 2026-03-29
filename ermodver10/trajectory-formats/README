@@ -1,0 +1,11 @@
+Files in this directory is examples to replace trajectory.F90.
+If the user want to write a reader for new trajectory format which does not have VMD plugin, 
+user should provide "trajectory" module, providing the following the type / subroutines:
+
+* type(handle)
+* subroutine open_trajectory
+* subroutine close_trajectory
+* subroutine read_trajectory
+
+Simple example is dcd.f90, which can read CHARMM / NAMD dcd format.
+If you want to write down new format, template_fortran.f90 is a good template to start on.

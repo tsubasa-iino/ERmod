@@ -1,0 +1,80 @@
+The general workflow of using ERmod with MARBLE is parallel to
+that described in the ERmod wiki page for the other MD packages.
+
+The gen_structure and gen_input scripts are available
+in tools/MARBLE directory within the ERmod package distributed.
+In the following, the directory containing
+the gen_structure and gen_input scripts is denoted as "ERmod-MARBLE directory".
+
+
+The gen_structure script runs as:
+
+   (path to ERmod-MARBLE directory)/gen_structure --mdat solution.mdat
+
+where solution.mdat is the topology file for the solution MD with MARBLE.
+User specifies his own topology file with the appropriate path.
+He is then asked the identification number of the solute
+and the number of solute molecules contained within the solution system.
+If the solution system has more than one solute molecules,
+the identification number needs to refer to the first one.
+After executing the gen_structure script,
+user has two directories of soln and refs.
+
+
+ermod run in soln:
+After moving to the soln directory, execute the gen_input script as:
+
+   (path to ERmod-MARBLE directory)/gen_input --dcd solution-run.dcd --log solution-run.log
+
+where solution-run.dcd and solution-run.log
+are the trajectory and log files from the solution MD with MARBLE.
+User specifies his own files with the appropriate paths.
+He can then run the ermod program to have the energy distribution functions.
+
+
+ermod run in refs:
+After moving to the refs directory, execute the gen_input script as:
+
+   (path to ERmod-MARBLE directory)/gen_input --dcd solvent-run.dcd --log solvent-run.log --flexible solute-run.dcd
+
+when the solute is flexible or as:
+
+   (path to ERmod-MARBLE directory)/gen_input --dcd solvent-run.dcd --log solvent-run.log --rigid solute.pdb
+
+when the solute is rigid,
+where solvent-run.dcd and solvent-run.log
+are the trajectory and log files from the reference-solvent MD with MARBLE,
+solute-run.dcd is the trajectory file for the solute isolated in vacuum,
+and solute.pdb is the PDB file for isolated solute.
+User needs only one of solute-run.dcd and solute.pdb,
+depending on whether his solute is flexible or rigid.
+
+The MARBLE version of gen_input prepares an option of --inscfg.
+It can be used as --inscfg tr&rot, --inscfg tr or --inscfg fix.
+These set the inscfg parameter within paramters_er as
+inscfg = 0, inscfg = 1, and inscfg = 2, respectively.
+See http://sourceforge.net/p/ermod/wiki/parameters-ermod02
+or http://sourceforge.net/p/ermod/wiki/parameters-ermod03
+for the meaning of the inscfg parameter.
+
+Further, the number of insertions per solvent configuration
+in the refs calculation can be modifed with an option of --maxins.
+For example, --maxins 500 in gen_input writes
+maxins = 500 into the parameters_er file.
+The default number of insertions is 1000.
+
+
+The default format for output trajectory from MARBLE is DCD.
+The ermod program can handle a DCD file without any special setting,
+and when user has a trajectory file in DCD format,
+he can run the ermod program without any modification.
+MARBLE also has an option of writing the trajectory in text format.
+When user adopts this option, he should visit
+the trajectory-formats directory within the ERmod package distributed.
+This directory has the marble.f90 file.
+User needs to replace the trajectory.F90 by
+   cp marble.f90 ../trajectory.F90
+and re-compile the ERmod package through the standard procedure described at
+https://sourceforge.net/p/ermod/wiki/build-Guide/.
+See also https://sourceforge.net/p/ermod/wiki/SpecialTrajFormat/.
+The ermod program can then handle a MARBLE trajectory in text format.

@@ -1,0 +1,335 @@
+#!/usr/bin/env python3
+
+import os.path
+import sys
+import re
+import math
+import pickle
+from argparse import ArgumentParser
+
+sys.setrecursionlimit(20000)
+
+carryover = {}
+
+parser = ArgumentParser()
+
+# mdat for MARBLE, mandatory
+parser.add_argument("-t", "--mdat", dest = "topology",
+                  help="MARBLE mdat file name",
+                  default = None)
+
+# can be specified; otherwise specify interactively
+parser.add_argument("-s", "--solute", dest = "solute",
+                  help = "start number and total number of solute molecules (e.g. 1,2)",
+                  default = None)
+
+parser.add_argument("-v", "--verbose", dest = "verbose", action="store_true",
+                  help = "Be more verbose",
+                  default = False)
+
+options = parser.parse_args()
+
+def log(x):
+    if options.verbose:
+        print(x, file=sys.stderr)
+
+def warn_or_error(x, col):
+    prefix = ""
+    suffix = ""
+    if os.isatty(sys.stderr.fileno()):
+        prefix = "\x1b[" + str(col) + ";1m"
+        suffix = "\x1b[0m"
+    print(prefix + x + suffix, file=sys.stderr)
+
+def warn(x):
+    warn_or_error("Warning: " + x, 33)
+
+def error(x):
+    warn_or_error("Error: " + x, 31)
+    sys.exit(1)
+
+if options.topology == None:
+    print("Error: MARBLE mdat file is not specified (try --help)", file=sys.stderr)
+    sys.exit(1)
+
+if not os.path.exists(options.topology):
+    print("Error: mdat file does not exist!", file=sys.stderr)
+    sys.exit(1)
+
+# read LJ interaction parameters and charges from topology file
+
+mass_table = {
+  1: 'H',
+  2: 'D',
+  4: 'He',
+  6: 'Li',
+  7: 'Li',
+  11: 'B',
+  12: 'C',
+  14: 'N',
+  16: 'O',
+  19: 'F',
+  23: 'Na',
+  28: 'Si',
+  31: 'P',
+  32: 'S',
+  35: 'Cl',
+  36: 'Cl',
+  39: 'K',
+  40: 'Ca',
+  56: 'Fe',
+  63: 'Cu',
+  64: 'Cu',
+  65: 'Zn',
+  80: 'Br',
+  127: 'I' }
+def atomtype_of_mass(mass):
+    imass = int(round(mass))
+    if imass not in mass_table:
+        return "M" # dummy atom
+    return mass_table[imass]
+
+def read_mdat(fname):
+    fh = open(fname, "rt")
+    l = next(fh)
+    if l[0:4] != "mdat":
+        print("Error: Topology file is not mdat file", file=sys.stderr)
+        sys.exit(1)
+    mdat_format = int(l[16:17])
+    charge_const = 1.0
+    if mdat_format == 0:
+        charge_const = 18.2223
+    if options.verbose:
+        print("mdat_format: ", mdat_format, "charge_const: ",charge_const, file=sys.stderr)
+    l = next(fh) # dummy
+    uft = None
+    atoms = None
+    l = next(fh)
+    natoms = int(l.strip())
+    atoms = [None] * natoms
+    for i in range(natoms):
+        l = next(fh).split()
+        # serial aname atype atypeno charge mass
+        #if options.verbose:
+        #    print >> sys.stderr, l[4], float(l[4]), l[5]
+        if mdat_format == 0:
+            atom = (int(l[0]), l[1], l[2], int(l[3]), float(l[4])/charge_const, float(l[5]))
+        else:
+            atom = (int(l[0]), l[1], l[2], int(l[3]), float(l[4]), float(l[5]))
+        atoms[i] = atom
+    if options.verbose:
+        print("Finished reading atomsn:", natoms, file=sys.stderr)
+    l = next(fh)
+    nres = int(l.strip())
+    for i in range(nres):
+        l = next(fh)
+    if options.verbose:
+        print("Finished reading residues:", nres, file=sys.stderr)
+    l = next(fh).split()
+    nmols = int(l[0].strip())
+    nsolutemol = int(l[1].strip())
+    istartatom = 0
+    mols = [None] * nmols
+    for i in range(nmols):
+        l = next(fh).split()
+        mol = (int(l[0]), istartatom)
+        istartatom += mol[0]
+        mols[i] = mol
+    if options.verbose:
+        print("Finished reading molecules:", nmols, file=sys.stderr)
+    l = next(fh).split()
+    ntypes = int(l[0].strip())
+    l = next(fh)  # skip 1 line
+    nindex = ntypes*ntypes
+    ii = 0
+    index = [None] * nindex
+    while ii < nindex:
+        l = next(fh).split()
+        #print l
+        for item in l:
+            index[ii] = int(item)
+            ii += 1
+    ntable = ntypes*(ntypes+1)/2;
+    if mdat_format == 0:
+        vdw12 = [None] * ntable
+        vdw6  = [None] * ntable
+        ii = 0
+        while ii < ntable:
+            l = next(fh).split()
+            for item in l:
+                vdw12[ii] = float(item)
+                ii += 1
+        ii = 0
+        while ii < ntable:
+            l = next(fh).split()
+            for item in l:
+                vdw6[ii] = float(item)
+                ii += 1
+        atomtable  = [None] * ntypes;
+        for i in range(ntypes):
+            ii = index[i*ntypes+i]
+            if vdw6[ii] == 0.0:
+                eps = 0.0
+                rmin = 0.0
+            else:
+                rmin6 = vdw12[ii] / vdw6[ii] * 2.0
+                eps = vdw6[ii] / rmin6 * 0.5
+                rmin = rmin6 ** (1.0/6.0)
+            atomtable[i]  = [eps, rmin*0.5];
+    else:
+        eps = [None] * ntable
+        rmin = [None] * ntable
+        ii = 0
+        while ii < ntable:
+            l = next(fh).split()
+            for item in l:
+                eps[ii] = float(item)
+                ii += 1
+        ii = 0
+        while ii < ntable:
+            l = next(fh).split()
+            for item in l:
+                rmin[ii] = float(item)
+                ii += 1
+        atomtable  = [None] * ntypes;
+        for i in range(ntypes):
+            ii = index[i*ntypes+i]
+            atomtable[i]  = [eps[ii], rmin[ii]*0.5];
+
+    if options.verbose:
+        print("Finished reading atom types:", ntypes, file=sys.stderr)
+    fh.close()
+    return (atoms, mols, nsolutemol, atomtable)
+
+def get_topology_info():
+    (atoms, mols, nsolutemol, atomtable) = read_mdat(options.topology)
+    natoms = len(atoms)
+    nmols = len(mols)
+    nsolutestartmol = 1
+
+    if options.solute:
+        solutes = options.solute.split(',')
+    else:
+        # interactive input
+        print("Number of molecules in mdat files: ", nmols)
+        nsolutestartmol = 1
+        prompt = "What is the start number of solute molecules? (default: 1) "
+        l = input(prompt).strip()
+        if l != "":
+            nsolutestartmol = int(l)
+        prompt = "How many solute molecules are? (default: "+str(nsolutemol)+") "
+        l = input(prompt).strip()
+        if l != "":
+            nsolutemol = int(l)
+
+    if nsolutemol >= nmols:
+        error("Number of solutes exceeds number of molecules in mdat: %d" % nsolutemol)
+    if nsolutemol <= 0:
+        error("Number of solutes must be positive.")
+
+    if nsolutestartmol >= nmols:
+        error("Number of solutes exceeds number of molecules in mdat: %d" % nsolutestartmol)
+    if nsolutestartmol <= 0:
+        error("Number of solutes must be positive.")
+
+    nsoluteendmol = nsolutestartmol + nsolutemol - 1
+    nsolutestartatom = mols[nsolutestartmol-1][1]
+    nsoluteatom = mols[nsoluteendmol-1][0]+mols[nsoluteendmol-1][1] - nsolutestartatom
+
+    moltypes = []
+    # imol, start atom, #atoms/mol, #mol
+    #moltypes.append([nsolutestartmol-1, nsolutestartatom, nsoluteatom, 1])
+
+    def is_same_mol(atoms, mols, i, j):
+        if mols[i][0] != mols[j][0]:
+            return False
+        n = mols[i][0]
+        iatom = mols[i][1]
+        jatom = mols[j][1]
+        for k in range(n):
+            ai = atoms[iatom + k] 
+            aj = atoms[jatom + k] 
+            if ai[1] != aj[1] or ai[2] != aj[2]:
+                return False
+        return True
+
+    def is_new_mol(atoms, mols, imol, pmol):
+        if pmol < 0:
+            return True
+        if is_same_mol(atoms, mols, imol, pmol):
+            return False
+        return True
+    
+    pmol = -1
+    solpos = -1
+    imoltype = 0
+    for imol in range(0, nmols):
+        if imol < nsolutestartmol - 1 or imol > nsoluteendmol - 1:
+            if is_new_mol(atoms, mols, imol, pmol):
+                moltypes.append([imol, mols[imol][1], mols[imol][0], 1])
+                imoltype += 1
+            else:
+                last = len(moltypes)-1
+                moltypes[last][3] = moltypes[last][3]+1
+            pmol = imol;
+        else:
+            if solpos == -1:
+                moltypes.append([nsolutestartmol-1, nsolutestartatom, nsoluteatom, 1])
+                solpos = imoltype
+                imoltype += 1
+ 
+                
+    if options.verbose:
+        print("[start mol, start atom, #atom/mol, #mol]: ", moltypes, file=sys.stderr) 
+
+    carryover["sltspec"] = solpos+1
+    # output
+
+    return (atoms, moltypes, atomtable, solpos)
+
+(atoms, moltypes, atomtable, solpos) = get_topology_info()
+
+def gen(mode):
+    if not os.path.exists(mode):
+        os.mkdir(mode)
+    mdifh = open(mode + "/MDinfo", "wt")
+    ntypes = len(moltypes)
+    if mode == "refs":
+        ntypes -= 1 # removing solute
+    print("FRAMES %d" % ntypes, file=mdifh)
+    for i in range(len(moltypes)):
+        if mode == "soln" or i != solpos:
+            print("%d" % moltypes[i][3], end=' ', file=mdifh)
+    print(file=mdifh)
+    for i in range(len(moltypes)):
+        if mode == "soln" or i != solpos:
+            print("%d" % moltypes[i][2], end=' ', file=mdifh)
+    print(file=mdifh)
+    mdifh.close()
+    
+    solvent_cnt = 1
+    iatom = 0
+    for i in range(len(moltypes)):
+        if i == solpos:
+            fn = "SltInfo"
+        else:
+            fn = "MolPrm%d" % solvent_cnt
+            solvent_cnt += 1
+        ofh = open(mode + "/" + fn, "wt")
+        (imol, sa, na, nm) = moltypes[i]
+        for j in range(na):
+            (_aid, _atomname, _atomtype, atyno, charge, mass) = atoms[sa + j]
+            (eps, rmin2) = atomtable[atyno]
+            atom = atomtype_of_mass(float(mass))
+            print(("%d %s %.5f %.5f %.5f" % 
+                           (j + 1, atom, charge, eps, rmin2)), file=ofh)
+        ofh.close()
+    # write carryover
+    if mode == "soln" and solpos != 0:
+        ofh = open(mode + "/.extraparam", "wt")
+        pickle.dump(carryover, ofh)
+        ofh.close()
+
+gen("soln")
+gen("refs")
+

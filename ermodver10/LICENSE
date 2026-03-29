@@ -1,0 +1,3 @@
+VMD plugins under vmdplugins/ are developed by Theoretical and Computational Biophysics Group, University of Illinois at Urbana-Champaign. See vmdplugins/LICENSE for license.
+xoshiro25ss.c, hash_real.c are in public domain.
+utility.F90, randgen.F90, vmdfio.c, trajectory.F90 and bestfit.F90 have "special exception" terms in GPL and can be used freely for other software. See the license terms in each file for details.

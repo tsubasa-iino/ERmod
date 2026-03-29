@@ -1,0 +1,400 @@
+#!/usr/bin/env python3
+
+import os
+import os.path
+import shutil
+import sys
+import re
+import pickle
+from argparse import ArgumentParser
+
+def warn_or_error(x, col):
+    prefix = ""
+    suffix = ""
+    if os.isatty(sys.stderr.fileno()):
+        prefix = "\x1b[" + str(col) + ";1m"
+        suffix = "\x1b[0m"
+    print(prefix + x + suffix, file=sys.stderr)
+
+def error(x):
+    warn_or_error("Error: " + x, 31)
+    sys.exit(1)
+
+parser = ArgumentParser()
+
+# only have to specify one of three:
+parser.add_argument("-t", "--targetdirectory", dest = "targetdirectory",
+                  help = "Directory that contains configuration data",
+                  default = os.getcwd())
+
+parser.add_argument("-l", "--log", dest = "log",
+                  help = "GENESIS log file")
+
+parser.add_argument("-x", "--dcd", dest = "dcd",
+                  help = "Solution or reference trajectory file")
+
+parser.add_argument("-p", "--pdb", dest = "pdb",
+                  help = "(deprecated) same as --rigid")
+
+parser.add_argument("-r", "--rigid", dest = "pdb",
+                  help = "Solute structure PDB file (for rigid insertion)")
+
+parser.add_argument("-s", "--flexible", dest = "solute",
+                  help = "Solute trajectory file (for flexible insertion)")
+
+parser.add_argument("-d", "--div", dest = "div", type=int,
+                  help = "Number of divided sections",
+                  default = None)
+
+parser.add_argument("--minenergy", dest = "minenergy", type=float,
+                  help = "Minimum energy in kcal/mol",
+                  default = -20.0)
+
+parser.add_argument("--maxins", dest = "maxins", type=int,
+                  help = "Number of insertions for refs (default: 1000)",
+                  default = 1000)
+
+options = parser.parse_args()
+
+if options.log == None:
+    print("Error: log file is not specified (try --help)", file=sys.stderr)
+    sys.exit(1)
+
+if options.dcd == None:
+    print("Error: dcd file is not specified (try --help)", file=sys.stderr)
+    sys.exit(1)
+
+def check_exists(f):
+    if not os.path.exists(f):
+        print("Error:", f, "file or directory does not exist", file=sys.stderr)
+        sys.exit(1)
+
+check_exists(options.targetdirectory)
+os.chdir(options.targetdirectory)
+
+check_exists("MDinfo")
+check_exists("SltInfo")
+check_exists(options.dcd)
+check_exists(options.log)
+if options.pdb:
+    check_exists(options.pdb)
+if options.solute:
+    check_exists(options.solute)
+
+def parse_log():
+    logfh = open(options.log, "rt")
+
+    genesis_type = ""
+    ljfrmt       = 0 # KK added
+    ljcmb        = 0 # arithmetic (CHARMM & AMBER)
+    temp         = 300.0
+    simtype      = 1 # nvt
+    is_periodic  = 0
+    ljfrcswt     = 0 # CHARMM-type potential switch
+    cut          = 0.
+    switchlj     = 0.
+    coulombtype  = 0
+    pme_scheme   = ""
+
+    if options.pdb:
+        mode = 2 # fixed
+    elif options.solute:
+        mode = 3 # flexible
+    else:
+        mode = 1 # solution
+    total = 0
+    freq = 0
+
+    box1_cand      = []
+    box2_cand      = []
+    box3_cand      = []
+    simtype_detect = 0 
+
+    runpat = re.compile(r"INFO:\s+(\d+)")
+    for l in logfh:
+        # get maximum performed timestep
+        m = runpat.search(l)
+        if m:
+            total = int(m.group(1))
+
+        # get GENESIS program type
+        m = re.search(r"\*\s+GENESIS\s+SPDYN\s+\*",l)
+        if m:
+            genesis_type = "SPDYN"
+
+        m = re.search(r"\*\s+GENESIS\s+ATDYN\s+\*",l)
+        if m:
+            genesis_type = "ATDYN"
+
+        # get ensemble type (NVT or NPT)
+        m = re.search(r"ensemble\s+=\s+(\S+)", l)
+        if m:
+            simtype_detect = 1 
+            if m.group(1) == "NPT":
+                simtype = 2 # npt
+
+        # get temperature (Kelvin)
+        m = re.search(r"temperature\s+=\s+(\S+)", l)
+        if m:
+           temp = float(m.group(1))
+
+        # get vdw_force_switch
+        m = re.search(r"vdW force_switch =        yes", l)
+        if m:
+            ljfrcswt = 2 # force switching
+
+        # get cutoff distance
+        m = re.search(r"cutoffdist\s+=\s+(\S+)", l)
+        if m:
+            cut = float(m.group(1))
+
+        # get switch distance
+        m = re.search(r"switchdist\s+=\s+(\S+)", l)
+        if m:
+            switchlj = float(m.group(1))
+
+        # get boundary condition
+        #
+        m = re.search(r"\s+type\s+=\s+(\S+)", l)
+        if m:
+            if m.group(1) == "PBC":
+                is_periodic = 1
+
+        # get type of electrostatic interaction 
+        m = re.search(r"\s+electrostatic\s+=\s+(\S+)", l)
+        if m:
+            if m.group(1) == "PME":
+                coulombtype = 2 # PME
+
+        # get PME alpha
+        m = re.search(r"\s+pme_alpha\s+=\s+(\S+)", l)
+        if m:
+            alpha = float(m.group(1))
+
+        # get PME scheme (AUTOSELECT or others)
+        m = re.search(r"\s+pme_scheme\s+=\s+(\S+)", l)
+        if m:
+            pme_scheme = m.group(1)
+
+        # get PME spline order
+        m = re.search(r"\s+pme_nspline\s+=\s+(\S+)", l)
+        if m:
+            pme_order = int(m.group(1))
+
+        # get PME grids
+        m = re.search(r"\s+pme_ngrid\(x,y,z\)=\s+(\d+)\s+(\d+)\s+(\d+)", l)
+        if m:
+            box1_cand.append(int(m.group(1)))
+            box2_cand.append(int(m.group(2)))
+            box3_cand.append(int(m.group(3)))
+
+        # get PME scheme actually used
+        m = re.search(r"Select_FFT_Scheme>\s+selected\s+scheme\s+is\s+(\S+)\s+", l)
+
+        if m:
+            fftscheme = m.group(1)
+
+        # get coordinate output period
+        m = re.search(r"\s+crdout_period\s+=\s+(\d+)", l)
+        if m:
+            freq = int(m.group(1))
+
+        # get Force Field type
+        m = re.search(r"forcefield\s+=\s+(\S+)", l)
+        if m:
+            if m.group(1) == "AMBER":
+                ljfrmt   = 5
+                ljfrcswt = 0 
+            elif m.group(1) == "CHARMM":
+                ljfrmt   = 0
+            elif m.group(1) == "GROAMBER":
+                ljfrmt   = 100
+                ljfrcswt = 1
+            
+    logfh.close()
+
+    # check 
+    if genesis_type == "ATDYN":
+        print("Error: GENESIS ATDYN is not supported currently", file=sys.stderr)
+
+    if simtype_detect == 1:
+        if simtype != 1 and simtype != 2:
+            print("Error: Unsupported ensemble type", file=sys.stderr)
+
+    if coulombtype == 2: 
+        if pme_scheme == "AUTOSELECT":
+            if fftscheme == "OPT_1DALLTOALL":
+                ifft = 0
+            elif fftscheme == "NOOPT_1DALLTOALL":
+                ifft = 1
+            elif fftscheme == "OPT_2DALLTOALL":
+                ifft = 2
+            elif fftscheme == "NOOPT_2DALLTOALL":
+                ifft = 3
+
+            box1 = box1_cand[ifft]
+            box2 = box2_cand[ifft]
+            box3 = box3_cand[ifft]
+
+        else:
+            box1 = box1_cand[0]
+            box2 = box2_cand[0]
+            box3 = box3_cand[0]
+
+
+    params = {
+        "slttype": mode,
+        "boxshp": is_periodic,
+        "estype": simtype,
+        "inptemp": temp,
+        "ljswitch": ljfrcswt,
+        "upljcut": cut,
+        "lwljcut": switchlj,
+        "cltype": coulombtype,
+        "elecut": cut,
+        "ljformat": ljfrmt
+    }
+
+    carryover = {}
+    try: 
+        ifh = open(".extraparam", "rb")
+        carryover = pickle.load(ifh)
+        ifh.close()
+        # read ljformat from carryover
+        for k in carryover:
+            if k != "sltspec": # sltspec is referenced only in soln
+                params[k] = carryover[k]
+            if ljfrmt == 100:
+                if k == "ljformat":
+                    params[k] = {
+                        'C6C12' : 4,
+                        'sigeps': 2,
+                        'table' : 5
+                        }[carryover[k]]
+
+                if k == "ljtype":
+                    params["cmbrule"] = {
+                        'geometric'  : 1,
+                        'arithmetic' : 0
+                        }[carryover["ljtype"]]
+
+    except OSError:
+        pass
+    except IOError:
+        pass
+
+    if mode == 1: # for solution system
+        if "sltspec" in carryover:
+            params["sltspec"] = carryover["sltspec"]
+
+    if coulombtype == 1:
+        # TODO: print alpha
+        pass        
+    elif coulombtype == 2: # PME
+        params.update({
+            "screen": alpha,
+            "splodr": pme_order,
+            "ms1max": box1,
+            "ms2max": box2,
+            "ms3max": box3
+        })
+        pass
+
+    if options.div == None:
+        if options.solute != None or options.pdb != None:
+            params["engdiv"] = 5             # reference solvent
+        else:
+            params["engdiv"] = 10            # solution
+    else:
+        params["engdiv"] = options.div
+
+    if options.maxins != None and mode != 1: # for reference solvent
+        params["maxins"] = options.maxins
+
+    # Order of the outputs to parameters_er
+    output_var =["slttype", "sltspec", "boxshp", "estype", "inptemp",
+                 "ljformat", "cmbrule", "ljswitch", "upljcut", "lwljcut",
+                 "cltype", "elecut", "screen", "splodr",
+                 "ms1max", "ms2max", "ms3max",
+                 "maxins", "engdiv"]
+
+    with open("parameters_er", "wt") as ofh:
+        print("&ene_param", file=ofh)
+        for k in output_var:
+            if k in list(params.keys()):
+                v = params[k]
+                if isinstance(v, str):
+                    print("        %s = \"%s\"," % (k, v), file=ofh)
+                elif isinstance(v, int):
+                    print("        %s = %d," % (k, v), file=ofh)
+                elif isinstance(v, float):
+                    print("        %s = %g," % (k, v), file=ofh)
+                else:
+                    error("Unknown output type")
+
+        print("""/
+&hist
+      eclbin=5.0e-2, ecfbin=2.0e-3, ec0bin=2.0e-4, finfac=10.0e0,
+      ecdmin=%f, ecfmns=-0.20e0, ecdcen=0.0e0, eccore=20.0e0,
+      ecdmax=1.0e11, pecore=200
+/
+""" % options.minenergy, file=ofh)
+
+    if options.solute == None and options.pdb == None:
+        # solution system
+        # update parameter_fe
+        feparamf = "../parameters_fe"
+        with open(feparamf, "wt") as fh:
+            print("&fevars", file=fh)
+            print("inptemp=%f" % temp, file=fh)
+            print("/", file=fh)
+
+    if total != 0 and freq != 0:
+        frames = total // freq
+    else:
+        frames = None
+    return (frames, is_periodic)
+    
+(frames, is_periodic) = parse_log()
+
+# update MDinfo
+if frames:
+    with open("MDinfo", "rt") as ifh, open("MDinfo.new", "wt") as ofh:
+        l = next(ifh).split()
+        print(frames, l[1], file=ofh)
+        print(next(ifh).strip(), file=ofh)
+        print(next(ifh).strip(), file=ofh)
+    shutil.move("MDinfo", "MDinfo.bak")
+    shutil.move("MDinfo.new", "MDinfo")
+
+def symlink(src, dest):
+    if os.path.exists(dest):
+        if os.path.islink(dest):
+            # renew link
+            os.remove(dest)
+        else:
+            return
+    os.symlink(src, dest)
+
+# link dcd
+symlink(options.dcd, "HISTORY")
+
+if options.solute:
+    # flexible
+    symlink(options.solute, "SltConf")
+elif options.pdb:
+    # fixed
+    fh = open(options.pdb, "rt")
+    coords = []
+    # overwrite SltInfo with coordinate information
+    for l in fh:
+        if l[0:4] == "ATOM" or l[0:6] == "HETATM":
+            coords.append((float(l[30:38]), float(l[38:46]), float(l[46:54])))
+    fh.close()
+    with open("SltInfo", "rt") as ifh, open("SltInfo.new", "wt") as ofh:
+        pos = 0
+        for l in ifh:
+            print(' '.join((l.split())[0:7]), coords[pos][0], coords[pos][1], coords[pos][2], file=ofh)
+            pos += 1
+    shutil.move("SltInfo", "SltInfo.bak")
+    shutil.move("SltInfo.new", "SltInfo")

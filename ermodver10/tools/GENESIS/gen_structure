@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+
+import os
+import sys
+import subprocess
+from argparse import ArgumentParser
+
+################################################################
+# Common modules, functions
+
+def warn_or_error(x, col):
+    prefix = ""
+    suffix = ""
+    if os.isatty(sys.stderr.fileno()):
+        prefix = "\x1b[" + str(col) + ";1m"
+        suffix = "\x1b[0m"
+    print(prefix + x + suffix, file=sys.stderr)
+
+def error(x):
+    warn_or_error("Error: " + x, 31)
+    sys.exit(1)
+
+########################################################################
+
+parser = ArgumentParser()
+
+# topology file format 
+parser.add_argument("-f", "--topformat", 
+                  dest    = "topformat",
+                  help    = "topology file format (AMBER, CHARMM)",
+                  default = None) 
+
+# topology
+parser.add_argument("-t", "--top", dest = "topology",
+                  help="topology (.top or .psf) file name")
+
+parser.add_argument("-p", "--param", dest = "param", action = "append",
+                  help = "CHARMM parameter file name (can be specified multiple-time)",
+                  default = [])
+
+# can be specified as string; otherwise specify interactively
+parser.add_argument("-s", "--solute", dest = "solute",
+                  help = "Segment name of solute molecule",
+                  default = None)
+
+parser.add_argument("-m", "--merge", dest = "merge",
+                  help = "Merge these residues by name, not just the order (Available only for AMBER)",
+                  default = "Na+,K+,Cl-,IP,IM,WAT")
+
+parser.add_argument("-v", "--verbose", dest = "verbose", action="store_true",
+                  help = "Be more verbose",
+                  default = False)
+
+options = parser.parse_args()
+
+dir = os.path.dirname(__file__)
+
+# Check topology 
+#
+if options.topology == None:
+    error("Error: Topology file is not specified (try --help)")
+
+# Check topology file format
+#
+if options.topformat == None:
+    error("Error: Topology file format is not specified (try --help)")
+
+if options.topformat == "AMBER":
+    script = dir + "/gen_structure_AMBER"
+elif options.topformat == "CHARMM":
+    script = dir + "/gen_structure_CHARMM"
+elif options.topformat == "GROMACS":
+    error("Error: GROMACS topology is not supported for GENESIS currently")
+else:
+    error("Error: Unknown topology file format")
+
+# Prepare arguments for gen_structure_XXXX 
+#
+command = script + " -t " + options.topology + " -s " + options.solute
+
+if options.topformat == "CHARMM":
+    for param in options.param:
+        command += " -p " + param
+
+if options.topformat == "AMBER" and options.merge != None:
+    command += " -m " + options.merge
+
+if options.verbose:
+    command += " -v"
+
+# Execute gen_structure_XXXX
+#
+os.system(command)
+

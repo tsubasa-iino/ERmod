@@ -1,0 +1,309 @@
+#!/usr/bin/env python3
+
+import os
+import os.path
+import shutil
+import sys
+import re
+import pickle
+from argparse import ArgumentParser
+
+################################################################
+# Common modules, functions
+
+def log(x):
+    if options.verbose:
+        print(x, file=sys.stderr)
+
+def warn_or_error(x, col):
+    prefix = ""
+    suffix = ""
+    if os.isatty(sys.stderr.fileno()):
+        prefix = "\x1b[" + str(col) + ";1m"
+        suffix = "\x1b[0m"
+    print(prefix + x + suffix, file=sys.stderr)
+
+def warn(x):
+    warn_or_error("Warning: " + x, 33)
+
+def error(x):
+    warn_or_error("Error: " + x, 31)
+    sys.exit(1)
+
+# End of common components
+################################################################
+
+
+
+parser = ArgumentParser()
+
+# only have to specify one of three:
+parser.add_argument("-l", "--log", dest = "log",
+                  help = "AMBER log (mdout) file")
+
+parser.add_argument("-x", "--traj", dest = "traj",
+                  help = "Solution or reference trajectory file (netcdf)")
+
+parser.add_argument("-r", "--rigid", dest = "rigid",
+                  help = "Solute structure (PDB file)")
+
+parser.add_argument("-s", "--flexible", dest = "flexible",
+                  help = "Solute trajectory file (netcdf)")
+
+parser.add_argument("-d", "--div", dest = "div", type=int,
+                  help = "Number of divided sections",
+                  default = None)
+
+parser.add_argument("--minenergy", dest = "minenergy", type=float,
+                  help = "Minimum energy in kcal/mol",
+                  default = -20.0)
+
+parser.add_argument("--maxins", dest = "maxins", type=int,
+                  help = "Number of insertions for refs (default: 1000)",
+                  default = 1000)
+
+parser.add_argument("-v", "--verbose", dest = "verbose", action="store_true",
+                  help = "Be more verbose",
+                  default = False)
+
+options = parser.parse_args()
+
+if options.log == None:
+    error("log file is not specified (try --help)")
+
+if options.traj == None:
+    error("Error: trajctory file is not specified (try --help)")
+
+def check_exists(f):
+    if not os.path.exists(f):
+        error(f + ": file does not exist")
+
+check_exists("MDinfo")
+check_exists("SltInfo")
+check_exists(options.traj)
+check_exists(options.log)
+if options.rigid:
+    check_exists(options.rigid)
+if options.flexible:
+    check_exists(options.flexible)
+
+# set mode
+if options.rigid:
+    mode = "rigid"
+elif options.flexible:
+    mode = "flexible"
+else:
+    mode = "solution"
+
+# sanity check
+def directory_check():
+    if mode in ["rigid", "flexible"]:
+        if os.path.basename(os.getcwd()) != "refs":
+            warn("The option is specified for insertion (reference system), " + 
+                 "but current directory name does not match")
+    else:
+        if os.path.basename(os.getcwd()) != "soln":
+            warn("The option is specified for insertion (reference system), " + 
+                 "but current directory name does not match")
+directory_check()
+
+def save_parameters_fe(temp):
+    feparamf = "../parameters_fe"
+    with open(feparamf, "wt") as fh:
+        print("&fevars", file=fh)
+        print("inptemp=%f" % temp, file=fh)
+        print("/", file=fh)
+
+def parse_log():
+    logfh = open(options.log, "rt")
+    temp = 300.0
+    is_periodic = 0
+    cut = 0.
+    switchlj = 0.
+    coulombtype = 0
+    total = 0
+    freq = 0
+
+    # gather control data
+    info_begin = re.compile(r"CONTROL\s+DATA\s+FOR\s+THE\s+RUN")
+    info_end = re.compile(r"ATOMIC\s+COORDINATES\s+AND\s+VELOCITIES")
+    for l in logfh:
+        m = info_begin.search(l)
+        if m:
+            break
+
+    lines = []
+
+    for l in logfh:
+        m = info_end.search(l)
+        if m:
+            break
+        else:
+            lines.append(l)
+
+    logfh.close()
+    
+    # parse lines
+    control = {}
+    re_float = r"[-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?"
+    secpat = re.compile(r"\s*([A-Za-z0-9 ]+?)\s*=\s*(%s),?" % re_float)
+
+    for l in lines:
+        # finditer returns *non-overlapping* matches
+        matches = secpat.finditer(l)
+        for m in matches:
+            section = m.group(1)
+            value = float(m.group(2))
+            control[section] = value
+
+    log(control)
+    # At this moment all data is concentrated in "control" dictionary
+
+    params = {}
+    params['slttype'] = {"rigid": 2, "flexible": 3, "solution": 1 }[mode]
+    params['ljformat'] = 5
+    temp = control['temp0']
+    params['inptemp'] = temp
+    if mode == "solution":
+        save_parameters_fe(temp)
+    
+    # AMBER supports cutoff only
+    params['upljcut'] = control['cut']
+    params['lwljcut'] = control['cut']
+    params['elecut'] = control['cut']
+    
+    # Periodic?
+    if control['ntb'] > 0:
+        params['boxshp'] = 1
+        # PME is automatically assumed!
+        params['cltype'] = 2
+        params['ms1max'] = int(control['NFFT1'])
+        params['ms2max'] = int(control['NFFT2'])
+        params['ms3max'] = int(control['NFFT3'])
+        params['splodr'] = int(control['Interpolation order'])
+        params['screen'] = control['Ewald Coefficient']
+        params['ewtoler'] = control['Tol']
+    else:
+        params['boxshp'] = 0
+        params['cltype'] = 0
+
+    # NVT or NPT?
+    if 'ntp' in control and control['ntp'] > 0:
+        params['estype'] = 2
+    else:
+        params['estype'] = 1
+
+    if options.div != None:
+        params['engdiv'] = options.div
+    else:
+        if mode == "solution":
+            params['engdiv'] = 10
+        else:
+            params['engdiv'] = 5
+
+    if options.maxins != None and mode != "solution":
+        params["maxins"] = options.maxins
+
+    try:
+        ifh = open(".extraparam", "rb")
+        carryover = pickle.load(ifh)
+        ifh.close()
+
+        if mode == "solution" and "sltspec" in carryover:
+            params["sltspec"] = carryover["sltspec"]
+    except OSError:
+        pass
+    except IOError:
+        pass
+
+    # Order of the outputs to parameters_er
+    output_var =["slttype", "sltspec", "boxshp", "estype", "inptemp",
+                 "ljformat", "upljcut", "lwljcut",
+                 "cltype", "elecut", "ewtoler", "screen", "splodr",
+                 "ms1max", "ms2max", "ms3max",
+                 "maxins", "engdiv"]
+
+    ofh = open("parameters_er", "wt")
+    print("&ene_param", file=ofh)
+    for k in output_var:
+        if k in list(params.keys()):
+            v = params[k]
+            if isinstance(v, str):
+                print("        %s = \"%s\"," % (k, v), file=ofh)
+            elif isinstance(v, int):
+                print("        %s = %d," % (k, v), file=ofh)
+            elif isinstance(v, float):
+                print("        %s = %g," % (k, v), file=ofh)
+            else:
+                error("Unknown output type")
+    
+    print("""/
+&hist
+      eclbin=5.0e-2, ecfbin=2.0e-3, ec0bin=2.0e-4, finfac=10.0e0,
+      ecdmin=%f, ecfmns=-0.20e0, ecdcen=0.0e0, eccore=20.0e0,
+      ecdmax=1.0e11, pecore=200
+/
+""" % options.minenergy, file=ofh)
+
+    steps = int(control["nstlim"])
+    steps_per_output = int(control["ntwx"])
+    frames = steps // steps_per_output
+    return frames
+
+frames = parse_log()
+
+# update MDinfo
+if frames:
+    with open("MDinfo", "rt") as ifh, open("MDinfo.new", "wt") as ofh:
+        l = next(ifh).split()
+        print(frames, l[1], file=ofh)
+        print(next(ifh).strip(), file=ofh)
+        print(next(ifh).strip(), file=ofh)
+    shutil.move("MDinfo", "MDinfo.bak")
+    shutil.move("MDinfo.new", "MDinfo")
+
+def symlink(src, dest):
+    if os.path.exists(dest):
+        if os.path.islink(dest):
+            # renew link
+            os.remove(dest)
+        else:
+            return
+    os.symlink(src, dest)
+
+# link or generate trajectory
+(_, ext) = os.path.splitext(options.traj)
+symlink(options.traj, "HISTORY")
+
+if options.flexible:
+    # flexible
+    symlink(options.flexible, "SltConf")
+
+elif options.rigid:
+    def get_pdb_coord():
+        # fixed
+        fh = open(options.rigid, "rt")
+        coords = []
+        # overwrite SltInfo with coordinate information
+        for l in fh:
+            if l[0:4] == "ATOM" or l[0:6] == "HETATM":
+                coords.append((float(l[30:38]), float(l[38:46]), float(l[46:54])))
+        fh.close()
+        return coords
+
+    (_, ext) = os.path.splitext(options.rigid)
+    if ext == ".pdb" or ext == ".PDB":
+        coords = get_pdb_coord()
+    else:
+        error("Unknown rigid file extension")
+    
+    with open("SltInfo", "rt") as ifh, open("SltInfo.new", "wt") as ofh:
+        for pos, l in enumerate(ifh):
+            ls = l.split()
+            if len(ls) in [5, 8]:
+                raise RuntimeError("SltInfo format is old, please restart from gen_structure")
+            print(' '.join((l.split())[0:7]), coords[pos][0], coords[pos][1], coords[pos][2], file=ofh)
+
+    shutil.move("SltInfo", "SltInfo.bak")
+    shutil.move("SltInfo.new", "SltInfo")
+

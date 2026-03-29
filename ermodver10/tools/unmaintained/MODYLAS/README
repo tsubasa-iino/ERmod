@@ -1,0 +1,62 @@
+The general workflow of using ERmod with MODYLAS is parallel to
+that described in the ERmod wiki page for the other MD packages.
+
+The gen_structure and gen_input scripts are available
+in tools/MODYLAS directory within the ERmod package distributed.
+In the following, the directory containing
+the gen_structure and gen_input scripts is denoted as "ERmod-MODYLAS directory".
+Their usages can be found respectively with
+
+   (path to ERmod-MODYLAS directory)/gen_structure --help
+   (path to ERmod-MODYLAS directory)/gen_input --help
+
+
+The gen_structure script runs as:
+
+   (path to ERmod-MODYLAS directory)/gen_structure --mdff solution.mdff
+
+where solution.mdff is the force-field file for the solution MD with MODYLAS.
+User specifies his own force-field file with the appropriate path.
+He is then asked the identification number of the solute.
+After executing the gen_structure script,
+user has two directories of soln and refs.
+
+
+ermod run in soln:
+After moving to the soln directory, execute the gen_input script as:
+
+   (path to ERmod-MODYLAS directory)/gen_input --traj solution-run.dcd --stdout solution-run.stdout
+
+where solution-run.dcd and solution-run.stdout
+are the trajectory and log files from the solution MD with MODYLAS.
+User specifies his own files with the appropriate paths.
+He can then run the ermod program to have the energy distribution functions.
+
+
+ermod run in refs:
+After moving to the refs directory, execute the gen_input script as:
+
+   (path to ERmod-MODYLAS directory)/gen_input --traj solvent-run.dcd --stdout solvent-run.stdout --flexible solute-run.dcd
+
+when the solute is flexible or as:
+
+   (path to ERmod-MODYLAS directory)/gen_input --traj solvent-run.dcd --stdout solvent-run.stdout --rigid solute.mdxyz
+
+when the solute is rigid,
+where solvent-run.dcd and solvent-run.stdout
+are the trajectory and log files from the reference-solvent MD with MODYLAS,
+solute-run.dcd is the trajectory file for the solute isolated in vacuum,
+and solute.mdxyz refers to the structure of rigid solute.
+The PDB format is also accepted for the solute structure specified by --rigid.
+User needs only one of solute-run.dcd and solute.mdxyz (or pdb),
+depending on whether his solute is flexible or rigid.
+
+
+ERmod does not support FMM yet.
+When an MODYLAS trajectory generated using FMM is provided,
+ERmod computes the energy distribution functions by employing PME.
+In such cases, gen_input needs an additional option of
+      --mdxyz (initial coordinate of MD in mdxyz format)
+It will then deliver a warning of
+      PME will be used in ermod instead of FMM
+and assign the PME parameters which are in close correspondence to the original ones in FMM.
